@@ -5,8 +5,11 @@ import net.kaupenjoe.mccourse.battleroyale.BattleRoyaleCommand;
 import net.kaupenjoe.mccourse.battleroyale.BattleRoyaleManager;
 import net.kaupenjoe.mccourse.command.RestoreMapCommand;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.player.Player;
+import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
+import net.minecraftforge.event.entity.living.LivingHurtEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
@@ -60,6 +63,38 @@ public class BattleRoyaleEvents {
     public static void onDeath(LivingDeathEvent event) {
         if (event.getEntity() instanceof ServerPlayer player) {
             BattleRoyaleManager.handleDeath(player);
+        }
+    }
+
+    @SubscribeEvent
+    public static void onPlayerDamage(LivingHurtEvent event) {
+        if (!(event.getSource().getEntity() instanceof ServerPlayer attacker)) {
+            return;
+        }
+        if (!(event.getEntity() instanceof Player victim)) {
+            return;
+        }
+        if (!BattleRoyaleManager.getActivePlayers().contains(attacker.getUUID()) ||
+                !BattleRoyaleManager.getActivePlayers().contains(victim.getUUID())) {
+            return;
+        }
+        if (!BattleRoyaleManager.canDealDamage(attacker.server)) {
+            event.setCanceled(true);
+            attacker.sendSystemMessage(net.minecraft.network.chat.Component.literal("Damage disabled for 10 seconds!"));
+        }
+    }
+
+    @SubscribeEvent
+    public static void onServerTick(TickEvent.ServerTickEvent event) {
+        if (event.phase == TickEvent.Phase.END) {
+            BattleRoyaleManager.tick(event.getServer().overworld());
+        }
+    }
+
+    @SubscribeEvent
+    public static void onPlayerTick(TickEvent.PlayerTickEvent event) {
+        if (event.phase == TickEvent.Phase.END && event.player instanceof ServerPlayer player) {
+            BattleRoyaleManager.enforceBounds(player);
         }
     }
 }
