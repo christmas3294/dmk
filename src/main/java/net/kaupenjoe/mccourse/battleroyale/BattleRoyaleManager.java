@@ -11,6 +11,11 @@ import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.world.level.border.WorldBorder;
+import net.kaupenjoe.mccourse.MCCourseMod;
 
 import java.util.*;
 
@@ -35,6 +40,20 @@ public class BattleRoyaleManager {
     private static final BlockPos BOUNDS_MIN = new BlockPos(-29, 4, 412);
     private static final BlockPos BOUNDS_MAX = new BlockPos(188, 97, 154);
 
+    private static final ResourceKey<Level> B_LEVEL = ResourceKey.create(Registries.DIMENSION, new ResourceLocation(MCCourseMod.MOD_ID, "b_world"));
+
+    private static final int SHRINK_INTERVAL_TICKS = 20 * 60; // 1 minute
+    private static final int SHRINK_AMOUNT = 40;
+
+    private static BlockPos currentMin;
+    private static BlockPos currentMax;
+    private static long lastShrinkTick;
+
+    private static ServerLevel borderLevel;
+    private static double originalBorderSize;
+    private static double originalBorderX;
+    private static double originalBorderZ;
+
     private static MapBackup MAP_BACKUP;
     private static boolean movedToArena = false;
     private BattleRoyaleManager() {}
@@ -52,29 +71,40 @@ public class BattleRoyaleManager {
         startTick = server.overworld().getGameTime();
         movedToArena = false;
 
-        ServerLevel level = server.getLevel(Level.OVERWORLD);
+        borderLevel = server.getLevel(B_LEVEL);
+        if (borderLevel == null) {
+            borderLevel = server.getLevel(Level.OVERWORLD);
+        }
+
+        currentMin = BOUNDS_MIN;
+        currentMax = BOUNDS_MAX;
+        lastShrinkTick = startTick;
+
+        if (borderLevel != null) {
+            WorldBorder wb = borderLevel.getWorldBorder();
+            originalBorderSize = wb.getSize();
+            originalBorderX = wb.getCenterX();
+            originalBorderZ = wb.getCenterZ();
+
+            double centerX = (currentMin.getX() + currentMax.getX()) / 2.0;
+            double centerZ = (currentMin.getZ() + currentMax.getZ()) / 2.0;
+            double sizeX = Math.abs(currentMax.getX() - currentMin.getX());
+            double sizeZ = Math.abs(currentMax.getZ() - currentMin.getZ());
+            double size = Math.max(sizeX, sizeZ);
+            wb.setCenter(centerX + 0.5, centerZ + 0.5);
+            wb.setSize(size);
+        }
 
 
-        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-            for (UUID activePlayer : ACTIVE_PLAYERS) {
-//                player.sendSystemMessage(Component.nullToEmpty("玩家uuid"+player.getUUID().toString()));
-//                player.sendSystemMessage(Component.nullToEmpty("玩家uuid1"+activePlayer.toString()));
-
-                if (player.getUUID().toString().equals(activePlayer.toString())) {
-
-                    ACTIVE_PLAYERS.add(player.getUUID());
-                    //SAVED_INVENTORIES.put(player.getUUID(), new InventoryState(player));
-
-                    if (level != null) {
-                        player.teleportTo(level, START_POS.getX() + 0.5, START_POS.getY(), START_POS.getZ() + 0.5,
-                                player.getYRot(), player.getXRot());
-                    }
-
-                    player.getInventory().armor.set(2, new ItemStack(Items.ELYTRA));
-                    player.sendSystemMessage(Component.literal("Battle Royale started!"));
-                }
+        for (UUID id : ACTIVE_PLAYERS) {
+            ServerPlayer player = server.getPlayerList().getPlayer(id);
+            if (player != null && borderLevel != null) {
+                player.teleportTo(borderLevel,
+                        START_POS.getX() + 0.5, START_POS.getY(), START_POS.getZ() + 0.5,
+                        player.getYRot(), player.getXRot());
+                player.getInventory().armor.set(2, new ItemStack(Items.ELYTRA));
+                player.sendSystemMessage(Component.literal("Battle Royale started!"));
             }
-
         }
         active = true;
     }
@@ -99,6 +129,13 @@ public class BattleRoyaleManager {
         active = false;
         startTick = 0;
         movedToArena = false;
+
+        if (borderLevel != null) {
+            WorldBorder wb = borderLevel.getWorldBorder();
+            wb.setCenter(originalBorderX, originalBorderZ);
+            wb.setSize(originalBorderSize);
+            borderLevel = null;
+        }
     }
 
     public static void addPlayer(ServerPlayer player) {
@@ -241,18 +278,31 @@ public class BattleRoyaleManager {
                 }
             }
         }
+
+        if (level.getGameTime() - lastShrinkTick >= SHRINK_INTERVAL_TICKS) {
+            lastShrinkTick = level.getGameTime();
+            currentMin = currentMin.offset(SHRINK_AMOUNT / 2, 0, SHRINK_AMOUNT / 2);
+            currentMax = currentMax.offset(-SHRINK_AMOUNT / 2, 0, -SHRINK_AMOUNT / 2);
+
+            double centerX = (currentMin.getX() + currentMax.getX()) / 2.0;
+            double centerZ = (currentMin.getZ() + currentMax.getZ()) / 2.0;
+            double sizeX = Math.abs(currentMax.getX() - currentMin.getX());
+            double sizeZ = Math.abs(currentMax.getZ() - currentMin.getZ());
+            double size = Math.max(sizeX, sizeZ);
+
+            WorldBorder wb = level.getWorldBorder();
+            wb.setCenter(centerX + 0.5, centerZ + 0.5);
+            wb.lerpSizeBetween(wb.getSize(), size, SHRINK_INTERVAL_TICKS);
+        }
     }
 
     public static void enforceBounds(ServerPlayer player) {
         if (!active) return;
         if (!ACTIVE_PLAYERS.contains(player.getUUID())) return;
-        double x = Mth.clamp(player.getX(), BOUNDS_MIN.getX(), BOUNDS_MAX.getX() + 1);
-        double y = Mth.clamp(player.getY(), BOUNDS_MIN.getY(), BOUNDS_MAX.getY() + 1);
-        double z = Mth.clamp(player.getZ(), BOUNDS_MIN.getZ(), BOUNDS_MAX.getZ() + 1);
+        double x = Mth.clamp(player.getX(), currentMin.getX(), currentMax.getX() + 1);
+        double y = Mth.clamp(player.getY(), currentMin.getY(), currentMax.getY() + 1);
+        double z = Mth.clamp(player.getZ(), currentMin.getZ(), currentMax.getZ() + 1);
         if (x != player.getX() || y != player.getY() || z != player.getZ()) {
-
-        }else{
-
             player.teleportTo(player.serverLevel(), x, y, z, player.getYRot(), player.getXRot());
         }
     }
